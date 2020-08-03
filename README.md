@@ -2,6 +2,8 @@
 
 Quickly decrypts strings from Agile.NET (aka AgileDotNet, CliSecure) packed assemblies. Supports multiple modules.
 
+<sup>Note: Due to anti tamper executable will no longer run. This can be removed with other tools.</sup>
+
 ## Compatibility
 
 Tested on Agile.NET 6.x
