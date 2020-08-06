@@ -6,7 +6,7 @@ Quickly decrypts strings from Agile.NET (aka AgileDotNet, CliSecure) packed asse
 
 ## Compatibility
 
-Tested on Agile.NET 6.x
+Tested on Agile.NET 6.4.x
 
 ## Credits
 - [0xd4d](https://github.com/0xd4d) - dnlib
