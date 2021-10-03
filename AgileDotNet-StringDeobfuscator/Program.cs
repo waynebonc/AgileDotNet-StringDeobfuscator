@@ -146,9 +146,9 @@ namespace AgileDotNet_StringDeobfuscator
 
                 return sb.ToString();
             }
-            catch (Exception e)
+            catch
             {
-                throw e;
+                throw;
             }
         }
     }
