@@ -15,120 +15,122 @@ namespace AgileDotNet_StringDeobfuscator
         {
             Console.WriteLine("----AgileDotNet (aka CliSecure) String Decryptor----\n\n");
 
-            bool hasSucceeded = false;
-            while (!hasSucceeded)
+            string path;
+            if (args.Length == 1)
+            {
+                path = args[0];
+            }
+            else
             {
                 Console.Write("Exe Path: ");
-                string path = Console.ReadLine();
+                path = Console.ReadLine();
+            }
 
-                // Some cleaning
-                path = path.Replace("\"", "");
+            // Some cleaning
+            path = path.Replace("\"", "");
 
-                try
+            try
+            {
+                if (string.IsNullOrEmpty(path) && !Path.GetExtension(path).ToLower().Equals(".exe"))
                 {
-                    if (string.IsNullOrEmpty(path) && !Path.GetExtension(path).ToLower().Equals(".exe"))
+                    throw new Exception("Enter a valid .exe path.");
+                }
+
+                // Load the assembly
+                var assemblyDef = AssemblyDef.Load(path);
+                var unsafeAssembly = Assembly.UnsafeLoadFrom(path);
+
+                // Find the location where key is located
+                TypeDef typeDef = null;
+                assemblyDef.Modules.ToList().ForEach(x => typeDef = x.GetTypes().Where(y => y.Name.Equals("<AgileDotNetRT>")).FirstOrDefault());
+
+                if (typeDef is null)
+                {
+                    throw new Exception("This does not appear to be an Agile.NET assembly.");
+                }
+
+                // Get Field where key is located
+                var fieldDef = typeDef.Fields.ToList().Where(x => x.Name.Equals("pRM=")).FirstOrDefault();
+
+                if (fieldDef is null)
+                {
+                    throw new Exception("Could not find byte[] pRM= key.");
+                }
+
+                // Store the key. If cannot obtain initial value, get from unsafe assembly (this is 99% of all cases as array is declared and assigned separately)
+                byte[] key = fieldDef.InitialValue;
+
+                if (key is null)
+                {
+                    var info = unsafeAssembly.ManifestModule.ResolveField(fieldDef.MDToken.ToInt32());
+
+                    key = info.GetValue(null) as byte[];
+                }
+
+                int decryptCount = 0;
+
+                assemblyDef.Modules.ToList().ForEach(x =>
+                {
+                    x.GetTypes().ToList().ForEach(y =>
                     {
-                        throw new Exception("Enter a valid .exe path.");
-                    }
-
-                    // Load the assembly
-                    var assemblyDef = AssemblyDef.Load(path);
-                    var unsafeAssembly = Assembly.UnsafeLoadFrom(path);
-
-                    // Find the location where key is located
-                    TypeDef typeDef = null;
-                    assemblyDef.Modules.ToList().ForEach(x => typeDef = x.GetTypes().Where(y => y.Name.Equals("<AgileDotNetRT>")).FirstOrDefault());
-
-                    if (typeDef is null)
-                    {
-                        throw new Exception("This does not appear to be an Agile.NET assembly.");
-                    }
-
-                    // Get Field where key is located
-                    var fieldDef = typeDef.Fields.ToList().Where(x => x.Name.Equals("pRM=")).FirstOrDefault();
-
-                    if (fieldDef is null)
-                    {
-                        throw new Exception("Could not find byte[] pRM= key.");
-                    }
-
-                    // Store the key. If cannot obtain initial value, get from unsafe assembly (this is 99% of all cases as array is declared and assigned separately)
-                    byte[] key = fieldDef.InitialValue;
-
-                    if (key is null)
-                    {
-                        var info = unsafeAssembly.ManifestModule.ResolveField(fieldDef.MDToken.ToInt32());
-
-                        key = info.GetValue(null) as byte[];
-                    }
-
-                    int decryptCount = 0;
-
-                    assemblyDef.Modules.ToList().ForEach(x =>
-                    {
-                        x.GetTypes().ToList().ForEach(y =>
+                        y.Methods.ToList().ForEach(method =>
                         {
-                            y.Methods.ToList().ForEach(method =>
+                            if (method.HasBody && method.Body.HasInstructions)
                             {
-                                if (method.HasBody && method.Body.HasInstructions)
+                                for (int i = 0; i < method.Body.Instructions.Count; i++)
                                 {
-                                    for (int i = 0; i < method.Body.Instructions.Count; i++)
+                                    /*
+                                        * String signature is;
+                                        * i : ldstr [cryptic_string]
+                                        * i + 1 : call string '<AgileDotNetRt>'::'oRM='(string)
+                                        */
+
+                                    if (method.Body.Instructions[i].OpCode == OpCodes.Ldstr &&
+                                        method.Body.Instructions[i + 1].OpCode == OpCodes.Call &&
+                                        method.Body.Instructions[i + 1].Operand.ToString().Contains("oRM="))
                                     {
-                                        /*
-                                         * String signature is;
-                                         * i : ldstr [cryptic_string]
-                                         * i + 1 : call string '<AgileDotNetRt>'::'oRM='(string)
-                                         */
 
-                                        if (method.Body.Instructions[i].OpCode == OpCodes.Ldstr &&
-                                            method.Body.Instructions[i + 1].OpCode == OpCodes.Call &&
-                                            method.Body.Instructions[i + 1].Operand.ToString().Contains("oRM="))
-                                        {
+                                        // Store the 'encrypted' operand
+                                        string operand = method.Body.Instructions[i].Operand.ToString();
 
-                                            // Store the 'encrypted' operand
-                                            string operand = method.Body.Instructions[i].Operand.ToString();
+                                        string decrypted = StringDecrypt(operand, key);
 
-                                            string decrypted = StringDecrypt(operand, key);
+                                        // Replace with decrypted equivalent
+                                        method.Body.Instructions[i].Operand = decrypted;
 
-                                            // Replace with decrypted equivalent
-                                            method.Body.Instructions[i].Operand = decrypted;
+                                        // Remove the method call
+                                        method.Body.Instructions[i + 1].OpCode = OpCodes.Nop;
 
-                                            // Remove the method call
-                                            method.Body.Instructions[i + 1].OpCode = OpCodes.Nop;
+                                        decryptCount++;
 
-                                            decryptCount++;
-
-                                            // Compensate for call when a string is found
-                                            i++;
-                                        }
+                                        // Compensate for call when a string is found
+                                        i++;
                                     }
                                 }
-                            });
+                            }
                         });
-                    });                    
+                    });
+                });                    
 
-                    // Write the new PE with deobfuscated strings
-                    ModuleWriterOptions options = new ModuleWriterOptions(assemblyDef.ManifestModule);
+                // Write the new PE with deobfuscated strings
+                ModuleWriterOptions options = new ModuleWriterOptions(assemblyDef.ManifestModule);
 
-                    options.MetadataOptions.Flags = options.MetadataOptions.Flags | MetadataFlags.PreserveAll;
+                options.MetadataOptions.Flags = options.MetadataOptions.Flags | MetadataFlags.PreserveAll;
 
-                    // For Agile.NET and KoiVM virtualization - thanks to @ribthegreat99OrN0P
-                    options.MetadataOptions.PreserveHeapOrder(assemblyDef.ManifestModule, true);
+                // For Agile.NET and KoiVM virtualization - thanks to @ribthegreat99OrN0P
+                options.MetadataOptions.PreserveHeapOrder(assemblyDef.ManifestModule, true);
 
-                    // Save the new PE
-                    string newFile = $"{Path.GetFileNameWithoutExtension(path)}-cleanstrings.exe";
-                    assemblyDef.Write($@"{Path.GetDirectoryName(path)}\{newFile}", options);
+                // Save the new PE
+                string newFile = $"{Path.GetFileNameWithoutExtension(path)}-cleanstrings.exe";
+                assemblyDef.Write($@"{Path.GetDirectoryName(path)}\{newFile}", options);
 
-                    Console.WriteLine($"Done...saved as {newFile}\nDecrypted: {decryptCount}\nPress any key to exit...");
+                Console.WriteLine($"Done...saved as {newFile}\nDecrypted: {decryptCount}\nPress any key to exit...");
 
-                    Console.ReadKey();
-
-                    hasSucceeded = true;
-                }
-                catch (Exception e)
-                {
-                    Console.WriteLine($"Something went wrong...\nMessage: {e.Message}\n\n{e.StackTrace}");
-                }
+                Console.ReadKey();
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"Something went wrong...\nMessage: {e.Message}\n\n{e.StackTrace}");
             }
         }
 
